@@ -284,10 +284,23 @@ func (c Config) NewProvider() (llm.Provider, error) {
 }
 
 // IsQuotaExhaustedMessage deliberately recognizes only explicit balance,
-// billing, credit, or quota-exhaustion signals. Generic 429/rate-limit text,
-// authentication failures, network errors, and server failures are excluded.
+// billing, credit, quota-exhaustion, or period-spend-cap signals. Generic
+// request-rate text, authentication failures, network errors, and server
+// failures are excluded.
 var nonFailoverHTTPStatus = regexp.MustCompile(`(?:status(?:\s+code)?|http(?:\s+status)?)\s*[=:]?\s*(?:401|403|5\d\d)\b`)
 var transientQuotaLimit = regexp.MustCompile(`(?i)(?:\b(?:rpm|tpm|rpd|qps)\b|quota[_\s-]*metric|rate[_\s-]*limit|too many requests|(?:requests?|tokens?)\s+(?:per|/)\s*(?:second|minute)|(?:per|/)\s*(?:second|minute)\s+(?:requests?|tokens?)|generate[_\s-]*requests[_\s-]*per[_\s-]*(?:minute|second)|tokens?[_\s-]*per[_\s-]*(?:minute|second))`)
+
+// periodUsageCap matches a spend cap measured over a billing period (day/week/
+// month/period), which gateways still label rate_limit_error even though it
+// cannot clear while a task is running. Checked before transientQuotaLimit so a
+// machine-readable code in the same body does not cancel the failover.
+var periodUsageCap = regexp.MustCompile(`(?i)(?:\b(?:daily|weekly|monthly)\s+(?:usage|spend|consumption|request|call|token|credit)?\s*limit|(?:usage|spend|consumption|credit)\s+(?:limit|cap)\s+(?:exceeded|reached)|maximum\s+\$?\s?[\d.,]+(?:\s+\w+){0,3}\s*(?:per|/)\s*(?:day|week|month|period|24\s?hours?)|(?:每日|每天|当日|每月|本月|每周)\s*(?:调用|请求|消费|使用)?\s*(?:上限|限额))`)
+
+// subMinuteWindow names the short sliding windows ("1 minute", "per second",
+// rpm) that self-recover. RE2 has no lookahead, so the window is ruled out up
+// front instead of excluded from the period-cap pattern — otherwise a gateway
+// that writes "usage limit exceeded for 1 minute" would rotate the chain.
+var subMinuteWindow = regexp.MustCompile(`(?i)(?:\b(?:rpm|tpm|qps|rps)\b|\bper\s+(?:second|minute)\b|(?:per|/)\s*(?:second|minute)\b|\b\d+\s*(?:seconds?|minutes?)\b)`)
 
 func IsQuotaExhaustedMessage(message string) bool {
 	message = strings.ToLower(message)
@@ -295,6 +308,12 @@ func IsQuotaExhaustedMessage(message string) bool {
 	// even when a gateway happens to echo a quota-looking phrase in the body.
 	if nonFailoverHTTPStatus.MatchString(message) {
 		return false
+	}
+	if subMinuteWindow.MatchString(message) {
+		return false
+	}
+	if periodUsageCap.MatchString(message) {
+		return true
 	}
 	// Provider APIs frequently describe an ordinary rate limit as "quota
 	// exceeded", especially Google-style responses containing a quota metric.

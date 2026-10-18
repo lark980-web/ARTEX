@@ -58,3 +58,9 @@ Thumbs.db
 /bench/
 /Dockerfile.bench
 /Dockerfile.bench.v2
+# 本地构建产物与运行数据（不提交）
+/artex.exe
+/artex.exe.*
+*.log
+/pgdata/
+/reports/

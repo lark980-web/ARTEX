@@ -25,6 +25,10 @@ func TestIsQuotaExhaustedMessage(t *testing.T) {
 		`billing_not_active`,
 		`credit balance is too low`,
 		`账户余额不足，请充值`,
+		`openai-responses: status 429: {"error":{"message":"Daily usage limit exceeded: maximum $1 per period for this OneClick user. Please try again later.","type":"rate_limit_error","param":null,"code":"rate_limit_exceeded"}}`,
+		`status 429: {"error":{"message":"You exceeded your current quota","type":"new_api_error"}}`,
+		`status 429: {"error":{"message":"monthly consumption limit reached","code":"rate_limit_exceeded"}}`,
+		`status 429: {"error":{"message":"请求超出每日调用上限","code":"rate_limit_exceeded"}}`,
 	}
 	for _, message := range positive {
 		if !IsQuotaExhaustedMessage(message) {
@@ -46,6 +50,8 @@ func TestIsQuotaExhaustedMessage(t *testing.T) {
 		`status 500: internal server error`,
 		`status=503: insufficient_quota`,
 		`context length exceeded`,
+		`status 429: {"error":{"message":"Usage limit exceeded for 1 minute","type":"rate_limit_error","code":"rate_limit_exceeded"}}`,
+		`status 429: {"error":{"message":"maximum 30 requests per minute","type":"rate_limit_error","code":"token_rate_limit_exceeded"}}`,
 	}
 	for _, message := range negative {
 		if IsQuotaExhaustedMessage(message) {
@@ -63,6 +69,7 @@ func TestQuotaAwareTransportOnlyNormalizesExplicitQuota429(t *testing.T) {
 		wantStatus int
 	}{
 		{name: "quota", status: http.StatusTooManyRequests, body: `{"code":"insufficient_quota"}`, wantStatus: http.StatusPaymentRequired},
+		{name: "period cap with rate-limit code", status: http.StatusTooManyRequests, body: `{"error":{"message":"Daily usage limit exceeded: maximum $1 per period for this OneClick user. Please try again later.","type":"rate_limit_error","code":"rate_limit_exceeded"}}`, wantStatus: http.StatusPaymentRequired},
 		{name: "ordinary rate limit", status: http.StatusTooManyRequests, body: `{"message":"rate limit exceeded"}`, wantStatus: http.StatusTooManyRequests},
 		{name: "server error", status: http.StatusInternalServerError, body: `insufficient_quota`, wantStatus: http.StatusInternalServerError},
 	}

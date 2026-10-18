@@ -540,6 +540,31 @@ func TestTaskLLMStreamDoesNotRetryDeterministicRejection(t *testing.T) {
 	}
 }
 
+// A 404 that names the gateway's own upstream routing failure is not a
+// deterministic rejection of THIS request, so it gets the same-provider retries.
+func TestTaskLLMStreamRetriesGatewayEnvelopeError(t *testing.T) {
+	defer withZeroRetryBackoff()()
+	provider := &flakyThenOKProvider{
+		failCount: 1,
+		failErr: errors.New(`openai-responses: status 404: {"error":{"message":"openai_error",` +
+			`"type":"bad_response_status_code","param":"","code":"bad_response_status_code"}}`),
+	}
+	hooks := taskLLMStreamHooks{
+		current: func() (taskLLMSelection, error) {
+			return taskLLMSelection{profileID: 11, provider: provider}, nil
+		},
+		exhaust: func(taskLLMSelection, error) (db.TaskLLMTransition, error) {
+			return db.TaskLLMTransition{}, nil
+		},
+	}
+	if _, err := collectTaskLLMStream(streamTaskLLM(context.Background(), "7", llm.CompletionRequest{}, hooks)); err != nil {
+		t.Fatalf("gateway envelope error must be retried, got: %v", err)
+	}
+	if provider.calls != 2 {
+		t.Fatalf("provider calls=%d, want 2 (one retry)", provider.calls)
+	}
+}
+
 func TestEngineReadyForTaskOverride(t *testing.T) {
 	t.Parallel()
 	e := &Engine{}

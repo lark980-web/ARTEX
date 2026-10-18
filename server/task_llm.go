@@ -8,6 +8,7 @@ import (
 	"iter"
 	"log"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -423,11 +424,16 @@ func sameProviderRetryPolicy(r agent.RetryConfig) (retries int, backoff func(int
 	return retries, backoff
 }
 
+// gatewayEnvelopeErr names the aggregating-gateway responses where the 4xx came
+// from the gateway's own upstream routing, not from this request being invalid.
+var gatewayEnvelopeErr = regexp.MustCompile(`(?i)bad_response_status_code|get_channel_failed|可用渠道不存在|no available channel`)
+
 // isRetryableStreamError 判断「提交前的流失败」是否值得在同一 provider 上重放。
 // 瞬时的传输中断 / 供应商过载 / 限流会自行恢复,可安全重试;而以下三类不重试:
 //   - 额度耗尽:交给 profile 故障转移处理,别在这里白烧重试
 //   - 上下文过长:相同请求重放也没用,交给 harness 的 reactive 压缩兜底
 //   - 4xx 确定性拒绝(400/401/403/404/422):到哪个 provider 都一样会失败
+//     (网关自报的上游通道故障除外,见 gatewayEnvelopeErr)
 func isRetryableStreamError(err error) bool {
 	if err == nil {
 		return false
@@ -436,6 +442,12 @@ func isRetryableStreamError(err error) bool {
 		return false
 	}
 	s := strings.ToLower(err.Error())
+	// 网关把上游通道的失败包装成 4xx 返回（new_api 的 bad_response_status_code /
+	// get_channel_failed），和真正的「模型不存在」确定性 404 不是一回事：同一请求
+	// 稍后重放就能成，所以交给同 provider 重试，别让它终结整轮规划。
+	if gatewayEnvelopeErr.MatchString(s) {
+		return true
+	}
 	if strings.Contains(s, "too long") || strings.Contains(s, "context length") ||
 		strings.Contains(s, "context_length") || strings.Contains(s, "maximum context") ||
 		strings.Contains(s, "status 413") {
