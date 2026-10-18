@@ -64,3 +64,11 @@ Thumbs.db
 *.log
 /pgdata/
 /reports/
+
+# 排查/调试时产生的临时文件（_h.txt 之类还含密钥，绝不提交）
+/_q*.sql
+/_rb.txt
+/_body.json
+/_d.json
+/_h*.txt
+/_test.log

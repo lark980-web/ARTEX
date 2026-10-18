@@ -214,6 +214,27 @@ cp -r <解压目录>/skills ./ && cp <解压目录>/artex ./
 
 ### 方式五：从源码编译
 
+Windows 上用 `build.ps1`，其余平台等价于下面的命令：
+
+```powershell
+# 默认复用仓库里已导出的前端（server/webui/dist），只重编后端
+.\build.ps1
+
+# 改过前端源码时，先重建前端再编译
+.\build.ps1 -RebuildFrontend
+
+# 指定输出与版本号
+.\build.ps1 -OutputPath artex.exe -Version v0.3.13
+```
+
+脚本会自动取 `git describe` 作版本号，并在编译后校验产物里确实含前端资源。
+
+> **务必带 `-tags embedui`**：前端由 `server/webui_embed.go`（受该构建标签约束）嵌入。
+> 不加这个标签会走 `webui_stub.go` 桩实现，页面只显示「前端未内嵌到此二进制」，
+> 而且产物会少掉整个前端。用裸 `go build` 最容易踩这个坑。
+
+其他平台：
+
 ```bash
 git pull
 cd web && npm ci && npm run build:static && cd ..
