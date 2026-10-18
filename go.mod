@@ -2,6 +2,11 @@ module github.com/Autumn-27/artex
 
 go 1.26.3
 
+// norma (LLM 适配层) 已内联到 third_party/norma：上游 github.com/Autumn-27/norma
+// 已下架，且本地对 openai-responses 流解析做了必要修复（网关不发 delta 事件时
+// 还原工具参数、检测被截断的参数），详见 third_party/norma/llm/openai_responses.go。
+replace github.com/Autumn-27/norma => ./third_party/norma
+
 require (
 	github.com/Autumn-27/norma v0.4.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
