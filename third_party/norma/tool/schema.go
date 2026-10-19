@@ -3,6 +3,7 @@ package tool
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -54,6 +55,16 @@ func validateValue(schema map[string]any, v any, path string) error {
 			return fmt.Errorf("%s: expected string", at(path))
 		}
 	case "integer":
+		// Models routinely quote numeric ids ("1447" instead of 1447). Rejecting
+		// those as "invalid tool input" throws away an otherwise-valid call, so a
+		// decimal integer in string form passes; handlers coerce with their own
+		// pid()/ParseInt readers.
+		if s, ok := v.(string); ok {
+			if _, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64); err != nil {
+				return fmt.Errorf("%s: expected integer", at(path))
+			}
+			break
+		}
 		if f, ok := v.(float64); !ok || f != float64(int64(f)) {
 			return fmt.Errorf("%s: expected integer", at(path))
 		}

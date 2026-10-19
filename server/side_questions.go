@@ -38,6 +38,7 @@ type sideQuestionState struct {
 	runs         map[string]sideRun
 	done         chan struct{}
 	outputTokens int
+	timeout      time.Duration
 }
 
 func sideModel(cfg agent.Config, id int64, name string) sidequestion.Model {
@@ -50,10 +51,29 @@ func bindSideProvider(p llm.Provider, cfg agent.Config, id int64, name string) l
 	return sidequestion.Bind(p, sideModel(cfg, id, name))
 }
 
+// sideAnswerBudget is the wall-clock budget for one side-question answer,
+// including any snapshot/history compression round it has to run first.
+func (s *Server) sideAnswerBudget() time.Duration {
+	if s.side != nil && s.side.timeout > 0 {
+		return s.side.timeout
+	}
+	return 300 * time.Second
+}
+
 func (s *Server) initSideQuestions() {
 	s.side = &sideQuestionState{pending: map[string]sidequestion.Snapshot{}, latest: map[string]sidequestion.Snapshot{}, seen: map[string][2]int64{}, runs: map[string]sideRun{}, done: make(chan struct{})}
 	if n, err := strconv.Atoi(os.Getenv("ARTEX_BTW_MAX_OUTPUT_TOKENS")); err == nil && n >= 256 && n <= 32768 {
 		s.side.outputTokens = n
+	}
+	// The default answer budget must cover a snapshot compression round on top of
+	// the answer itself: compressing a ~170K-token snapshot already spends ~100s,
+	// so the old fixed 120s deadline killed every large-context side question with
+	// 「旁路回答超过 120 秒」 before it could answer. 0/unset → 300s.
+	if n, err := strconv.Atoi(os.Getenv("ARTEX_BTW_TIMEOUT_SECONDS")); err == nil && n >= 30 && n <= 3600 {
+		s.side.timeout = time.Duration(n) * time.Second
+	}
+	if s.side.timeout <= 0 {
+		s.side.timeout = 300 * time.Second
 	}
 	if s.m.pg == nil {
 		close(s.side.done)
@@ -409,7 +429,7 @@ func (s *Server) handleSideQuestions(w http.ResponseWriter, r *http.Request, p s
 		return
 	}
 	if created {
-		ctx, cancel := context.WithTimeout(s.ctx, 120*time.Second)
+		ctx, cancel := context.WithTimeout(s.ctx, s.sideAnswerBudget())
 		s.side.mu.Lock()
 		s.side.runs[e.ID] = sideRun{key: key, parent: p, cancel: cancel, done: make(chan struct{})}
 		s.side.mu.Unlock()
@@ -491,7 +511,7 @@ func (s *Server) runSide(ctx context.Context, cancel context.CancelFunc, e sideq
 		e.Error = "回答已停止"
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			e.Status = "failed"
-			e.Error = "旁路回答超过 120 秒，已停止"
+			e.Error = fmt.Sprintf("旁路回答超过 %d 秒，已停止", int(s.sideAnswerBudget().Seconds()))
 		}
 	} else if runErr != nil {
 		e.Status = "failed"

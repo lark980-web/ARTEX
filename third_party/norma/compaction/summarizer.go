@@ -32,8 +32,21 @@ func ProviderSummarizer(p llm.Provider, maxOutputTokens int, nonStreaming bool) 
 	if maxOutputTokens > 0 && maxOutputTokens < maxOut {
 		maxOut = maxOutputTokens
 	}
-	return func(ctx context.Context, msgs []llm.Message) (string, error) {
+	var call func(context.Context, []llm.Message) (string, error)
+	call = func(ctx context.Context, msgs []llm.Message) (string, error) {
 		work := pairForReplay(msgs)
+		// A head grown past the gateway body limit cannot be summarized in one
+		// request either: that summary call 413s, AutoCompact counts a failure and
+		// disables itself after 3, and the next send ships the full multi-megabyte
+		// body — the run then dies with prompt_too_long. Fold oversized heads down
+		// in bounded chunks BEFORE the single-request path.
+		if historyChars(work) > chunkGroupBudget {
+			folded, err := summarizeInChunks(ctx, work, call)
+			if err != nil {
+				return "", err
+			}
+			work = folded
+		}
 		var lastErr error
 		for attempt := 0; attempt <= maxPTLRetries; attempt++ {
 			raw, err := streamSummary(ctx, p, maxOut, work, nonStreaming)
@@ -52,6 +65,84 @@ func ProviderSummarizer(p llm.Provider, maxOutputTokens int, nonStreaming bool) 
 		}
 		return "", lastErr
 	}
+	return call
+}
+
+// summarizeChunkChars is the total request budget one summary call may occupy:
+// the replayed history plus the fixed summary prompt plus JSON/tool-schema
+// envelope. chunkGroupBudget is what the history itself may fill.
+// The aggregating gateways reject request bodies in the single-digit MiB range
+// (413), and a chunk must leave headroom for that envelope.
+const (
+	summarizeChunkChars = 2 << 20 // 2 MiB total summary request
+	chunkGroupBudget    = summarizeChunkChars - 64*1024
+)
+
+// summarizeInChunks digests an oversized working head piecewise: API rounds are
+// packed into ≤chunkGroupBudget groups, each group is summarized on its own,
+// and the resulting digests are folded back down into one message list so the
+// caller's normal single-request path still applies. Nothing is dropped on the
+// way in; only the digest of the digest is smaller.
+func summarizeInChunks(ctx context.Context, msgs []llm.Message, summarize func(context.Context, []llm.Message) (string, error)) ([]llm.Message, error) {
+	groups := groupByAPIRound(msgs)
+	if len(groups) < 2 {
+		// A single API round cannot be split any further; let the caller's
+		// overflow-truncation path handle it.
+		return msgs, nil
+	}
+	var chunks [][]llm.Message
+	var cur []llm.Message
+	curChars := 0
+	for _, g := range groups {
+		gc := historyChars(g)
+		if len(cur) > 0 && curChars+gc > chunkGroupBudget {
+			chunks = append(chunks, cur)
+			cur, curChars = nil, 0
+		}
+		cur = append(cur, g...)
+		curChars += gc
+	}
+	if len(cur) > 0 {
+		chunks = append(chunks, cur)
+	}
+	if len(chunks) < 2 {
+		return msgs, nil
+	}
+	digests := make([]string, 0, len(chunks))
+	for _, ch := range chunks {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		d, err := summarize(ctx, ch)
+		if err != nil {
+			return nil, err
+		}
+		if d != "" {
+			digests = append(digests, d)
+		}
+	}
+	if len(digests) == 0 {
+		return nil, nil
+	}
+	folded := strings.Join(digests, "\n\n")
+	// A folded digest that still exceeds the chunk budget has no room left for a
+	// second summarization pass; ship it as the summary body directly.
+	if len(folded) > summarizeChunkChars {
+		return []llm.Message{llm.UserText("Summary:\n" + folded)}, nil
+	}
+	return []llm.Message{llm.UserText(folded)}, nil
+}
+
+// historyChars is the message-level character footprint of msgs (the whole
+// history, not the post-boundary API view). blockChars is per ContentBlock.
+func historyChars(msgs []llm.Message) int {
+	n := 0
+	for i := range msgs {
+		for _, b := range msgs[i].Content {
+			n += blockChars(b)
+		}
+	}
+	return n
 }
 
 // streamSummary issues one summary request (head + summary-request message),

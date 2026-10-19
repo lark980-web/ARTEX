@@ -157,3 +157,29 @@ func TestSchemaValidation(t *testing.T) {
 		t.Fatal("expected type error")
 	}
 }
+
+// Models quote integer ids as strings ("1447"). Those used to be rejected as
+// invalid tool input before the handler's own pid() coercion ever saw them.
+func TestIntegerAcceptsNumericString(t *testing.T) {
+	schema := map[string]any{
+		"type":     "object",
+		"required": []string{"goal_id"},
+		"properties": map[string]any{
+			"goal_id": map[string]any{"type": "integer"},
+		},
+	}
+	for _, in := range []string{
+		`{"goal_id": 1447}`,
+		`{"goal_id": "1447"}`,
+		`{"goal_id": " 1447 "}`,
+	} {
+		if err := ValidateInput(schema, []byte(in)); err != nil {
+			t.Errorf("ValidateInput(%s) = %v, want nil", in, err)
+		}
+	}
+	for _, in := range []string{`{"goal_id": "abc"}`, `{"goal_id": "14.5"}`, `{"goal_id": true}`, `{"goal_id": null}`} {
+		if err := ValidateInput(schema, []byte(in)); err == nil {
+			t.Errorf("ValidateInput(%s) = nil, want error", in)
+		}
+	}
+}
